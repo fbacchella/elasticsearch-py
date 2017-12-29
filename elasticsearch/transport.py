@@ -1,6 +1,7 @@
 import time
 from itertools import chain
 
+from .compat import string_types
 from .connection import Urllib3HttpConnection
 from .connection_pool import ConnectionPool, DummyConnectionPool
 from .serializer import JSONSerializer, Deserializer, DEFAULT_SERIALIZERS
@@ -255,7 +256,7 @@ class Transport(object):
         if self.sniff_on_connection_fail:
             self.sniff_hosts()
 
-    def perform_request(self, method, url, headers=None, params=None, body=None):
+    def perform_async_request(self, callback, method, url, headers=None, params=None, body=None):
         """
         Perform the actual request. Retrieve a connection from the connection
         pool, pass all the information to it's perform_request method and
@@ -294,7 +295,7 @@ class Transport(object):
 
         if body is not None:
             try:
-                body = body.encode('utf-8', 'surrogatepass')            
+                body = body.encode('utf-8', 'surrogatepass')
             except (UnicodeDecodeError, AttributeError):
                 # bytes/str - no need to re-encode
                 pass
@@ -309,14 +310,16 @@ class Transport(object):
 
         for attempt in range(self.max_retries + 1):
             connection = self.get_connection()
+            future_result = yield (connection, method, url, params, body, headers, ignore, timeout)
 
             try:
-                status, headers_response, data = connection.perform_request(method, url, params, body, headers=headers, ignore=ignore, timeout=timeout)
+
+                status, headers, data = future_result()
 
             except TransportError as e:
                 if method == 'HEAD' and e.status_code == 404:
-                    return False
-
+                    self._process(callback, method, connection, status, headers, False)
+                    break
                 retry = False
                 if isinstance(e, ConnectionTimeout):
                     retry = self.retry_on_timeout
@@ -335,15 +338,36 @@ class Transport(object):
                     raise
 
             else:
-                # connection didn't fail, confirm it's live status
-                self.connection_pool.mark_live(connection)
+                self._process(callback, method, connection, status, headers, data)
+                break
 
-                if method == 'HEAD':
-                    return 200 <= status < 300
+    def perform_request(self, method, url, headers=None, params=None, body=None):
+        # a empty lambda can be an attribute holder
+        values = lambda x: None
+        def callback(data):
+            values.data = data
 
-                if data:
-                    data = self.deserializer.loads(data, headers_response.get('content-type'))
-                return data
+        pp = self.perform_async_request(callback, method, url, headers, params, body)
+        try:
+            (connection, method, url, params, body, headers, ignore, timeout) = next(pp)
+            while True:
+                future_perform = lambda: connection.perform_request(method, url, params, body, headers=headers, ignore=ignore, timeout=timeout)
+                (connection, method, url, params, body, headers, ignore, timeout) = pp.send(future_perform)
+        except StopIteration:
+            pass
+        return values.data
+
+    def _process(self, callback, method, connection, status, headers, data):
+        if isinstance(data, bool):
+            callback(data)
+        elif method == 'HEAD':
+            callback(200 <= status < 300)
+        else:
+            # connection didn't fail, confirm it's live status
+            self.connection_pool.mark_live(connection)
+            if data is not None and isinstance(data, string_types):
+                data = self.deserializer.loads(data, headers.get('content-type'))
+            callback(data)
 
     def close(self):
         """
