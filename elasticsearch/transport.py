@@ -321,7 +321,7 @@ class Transport(object):
 
                 except TransportError as e:
                     if method == 'HEAD' and e.status_code == 404:
-                        future.set_result(self._process(callback, method, connection, e.status_code, headers_out, False))
+                        future.set_result(self._process(callback, method, connection, e.status_code, {}, False))
                         break
                     retry = False
                     if isinstance(e, ConnectionTimeout):
@@ -364,9 +364,9 @@ class Transport(object):
 
     def _process(self, callback, method, connection, status, headers, data):
         if isinstance(data, bool):
-            callback(data)
+            return callback(data)
         elif method == 'HEAD':
-            callback(200 <= status < 300)
+            return callback(200 <= status < 300)
         else:
             # connection didn't fail, confirm it's live status
             self.connection_pool.mark_live(connection)
