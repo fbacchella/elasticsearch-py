@@ -7,7 +7,7 @@ from .connection_pool import ConnectionPool, DummyConnectionPool
 from .serializer import JSONSerializer, Deserializer, DEFAULT_SERIALIZERS
 from .exceptions import ConnectionError, TransportError, SerializationError, \
                         ConnectionTimeout
-
+from asyncio import Future
 
 def get_host_info(node_info, host):
     """
@@ -308,54 +308,59 @@ class Transport(object):
             if isinstance(ignore, int):
                 ignore = (ignore, )
 
-        for attempt in range(self.max_retries + 1):
-            connection = self.get_connection()
-            future_result = yield (connection, method, url, params, body, headers, ignore, timeout)
+        future = Future()
 
-            try:
+        def iterator():
+            for attempt in range(self.max_retries + 1):
+                connection = self.get_connection()
+                future_result = yield (connection, method, url, params, body, headers, ignore, timeout)
 
-                status, headers, data = future_result()
+                try:
 
-            except TransportError as e:
-                if method == 'HEAD' and e.status_code == 404:
-                    self._process(callback, method, connection, status, headers, False)
-                    break
-                retry = False
-                if isinstance(e, ConnectionTimeout):
-                    retry = self.retry_on_timeout
-                elif isinstance(e, ConnectionError):
-                    retry = True
-                elif e.status_code in self.retry_on_status:
-                    retry = True
+                    status, headers_out, data = future_result()
 
-                if retry:
-                    # only mark as dead if we are retrying
-                    self.mark_dead(connection)
-                    # raise exception on last retry
-                    if attempt == self.max_retries:
-                        raise
+                except TransportError as e:
+                    if method == 'HEAD' and e.status_code == 404:
+                        future.set_result(self._process(callback, method, connection, e.status_code, headers_out, False))
+                        break
+                    retry = False
+                    if isinstance(e, ConnectionTimeout):
+                        retry = self.retry_on_timeout
+                    elif isinstance(e, ConnectionError):
+                        retry = True
+                    elif e.status_code in self.retry_on_status:
+                        retry = True
+
+                    if retry:
+                        # only mark as dead if we are retrying
+                        self.mark_dead(connection)
+                        # raise exception on last retry
+                        if attempt == self.max_retries:
+                            future.set_exception(e)
+                            break
+                    else:
+                        future.set_exception(e)
+                        break
+
                 else:
-                    raise
-
-            else:
-                self._process(callback, method, connection, status, headers, data)
-                break
+                    try:
+                        future.set_result(self._process(callback, method, connection, status, headers_out, data))
+                    except Exception as e:
+                        future.set_exception(e)
+                    break
+        return(iterator(), future)
 
     def perform_request(self, method, url, headers=None, params=None, body=None):
-        # a empty lambda can be an attribute holder
-        values = lambda x: None
-        def callback(data):
-            values.data = data
 
-        pp = self.perform_async_request(callback, method, url, headers, params, body)
+        generator, future = self.perform_async_request(lambda x: x, method, url, headers, params, body)
         try:
-            (connection, method, url, params, body, headers, ignore, timeout) = next(pp)
+            (connection, method, url, params, body, headers, ignore, timeout) = generator.send(None)
             while True:
                 future_perform = lambda: connection.perform_request(method, url, params, body, headers=headers, ignore=ignore, timeout=timeout)
-                (connection, method, url, params, body, headers, ignore, timeout) = pp.send(future_perform)
+                (connection, method, url, params, body, headers, ignore, timeout) = generator.send(future_perform)
         except StopIteration:
             pass
-        return values.data
+        return future.result()
 
     def _process(self, callback, method, connection, status, headers, data):
         if isinstance(data, bool):
@@ -367,7 +372,7 @@ class Transport(object):
             self.connection_pool.mark_live(connection)
             if data is not None and isinstance(data, string_types):
                 data = self.deserializer.loads(data, headers.get('content-type'))
-            callback(data)
+            return callback(data)
 
     def close(self):
         """
