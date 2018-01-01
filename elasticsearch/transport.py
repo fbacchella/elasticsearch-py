@@ -1,7 +1,6 @@
 import time
 from itertools import chain
 
-from .compat import string_types
 from .connection import Urllib3HttpConnection
 from .connection_pool import ConnectionPool, DummyConnectionPool
 from .serializer import JSONSerializer, Deserializer, DEFAULT_SERIALIZERS
@@ -370,7 +369,7 @@ class Transport(object):
         else:
             # connection didn't fail, confirm it's live status
             self.connection_pool.mark_live(connection)
-            if data is not None and isinstance(data, string_types):
+            if data:
                 data = self.deserializer.loads(data, headers.get('content-type'))
             return callback(data)
 
