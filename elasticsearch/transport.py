@@ -343,7 +343,9 @@ class Transport(object):
                     future.set_result(200 <= status < 300)
                 else:
                     try:
-                        future.set_result(self.deserializer.loads(data, headers_out.get('content-type')))
+                        if data:
+                            data = self.deserializer.loads(data, headers_out.get('content-type'))
+                        future.set_result(data)
                     except Exception as e:
                         future.set_exception(e)
                 break
