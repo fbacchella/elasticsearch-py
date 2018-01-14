@@ -310,11 +310,12 @@ class Transport(object):
         for attempt in range(self.max_retries + 1):
             connection = self.get_connection()
             future_result = yield (connection, method, url, params, body, headers, ignore, timeout)
+            # The first used to return params return with no future_result, so skip it
+            if future_result is None:
+                continue
 
             try:
-
                 status, headers_out, data = future_result()
-
             except TransportError as e:
                 if method == 'HEAD' and e.status_code == 404:
                     future.set_result(False)
