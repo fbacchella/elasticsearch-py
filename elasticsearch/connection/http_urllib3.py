@@ -1,7 +1,11 @@
 import time
 import ssl
-import urllib3
-from urllib3.exceptions import ReadTimeoutError, SSLError as UrllibSSLError
+try:
+    import urllib3
+    from urllib3.exceptions import ReadTimeoutError, SSLError as UrllibSSLError
+    URLLIB3_AVAILABLE = True
+except ImportError:
+    URLLIB3_AVAILABLE = False
 import warnings
 import gzip
 
@@ -70,6 +74,8 @@ class Urllib3HttpConnection(Connection):
             client_key=None, ssl_version=None, ssl_assert_hostname=None,
             ssl_assert_fingerprint=None, maxsize=10, headers=None, ssl_context=None, http_compress=False, **kwargs):
 
+        if not URLLIB3_AVAILABLE:
+            raise ImproperlyConfigured("Please install urllib3 to use Urllib3HttpConnection.")
         super(Urllib3HttpConnection, self).__init__(host=host, port=port, use_ssl=use_ssl, **kwargs)
         self.http_compress = http_compress
         self.headers = urllib3.make_headers(keep_alive=True)
